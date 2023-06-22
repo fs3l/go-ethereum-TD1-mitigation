@@ -685,6 +685,16 @@ func (pool *LegacyPool) add(tx *types.Transaction, local bool) (replaced bool, e
 				return false, txpool.ErrFutureReplacePending
 			}
 		}
+		
+		//drop the last element in the same account of drop old tx list
+		drop_new := make(types.Transactions, 0, pool.all.Slots()-int(pool.config.GlobalSlots+pool.config.GlobalQueue)+numSlots(tx))
+		for _, dropTx := range drop {
+			dropSender, _ := types.Sender(pool.signer, dropTx)
+			if list_dropsender := pool.pending[dropSender]; list_dropsender != nil && list_dropsender.Overlaps(dropTx) {
+				drop_new = append(drop_new, list_dropsender.LastElement())
+			}
+		}
+		drop = drop_new
 
 		// Kick out the underpriced remote transactions.
 		for _, tx := range drop {
