@@ -663,7 +663,7 @@ func (pool *LegacyPool) add(tx *types.Transaction, local bool) (replaced bool, e
 		// mark it as underpriced and don't accept it.
 		for _, dropTx := range drop {
 			dropSender, _ := types.Sender(pool.signer, dropTx)
-			if list_dropsender := pool.pending[dropSender]; list_dropsender != nil && list_dropsender.Overlaps(dropTx) {
+			if list_dropsender := pool.pending[dropSender]; list_dropsender != nil && list_dropsender.Contains(dropTx) {
 				if tx.GasPrice().Cmp(list_dropsender.totalcost.Div(list_dropsender.totalcost, big.NewInt(int64(list_dropsender.Len())))) < 0 {
 					return false, ErrUnderpriced
 				}
@@ -701,7 +701,7 @@ func (pool *LegacyPool) add(tx *types.Transaction, local bool) (replaced bool, e
 		drop_new := make(types.Transactions, 0, pool.all.Slots()-int(pool.config.GlobalSlots+pool.config.GlobalQueue)+numSlots(tx))
 		for _, dropTx := range drop {
 			dropSender, _ := types.Sender(pool.signer, dropTx)
-			if list_dropsender := pool.pending[dropSender]; list_dropsender != nil && list_dropsender.Overlaps(dropTx) {
+			if list_dropsender := pool.pending[dropSender]; list_dropsender != nil && list_dropsender.Contains(dropTx) {
 				drop_new = append(drop_new, list_dropsender.LastElement())
 			}
 		}
