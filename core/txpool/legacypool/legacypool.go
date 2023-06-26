@@ -659,6 +659,16 @@ func (pool *LegacyPool) add(tx *types.Transaction, local bool) (replaced bool, e
 		// Otherwise if we can't make enough room for new one, abort the operation.
 		drop, success := pool.priced.Discard(pool.all.Slots()-int(pool.config.GlobalSlots+pool.config.GlobalQueue)+numSlots(tx), isLocal)
 
+		// New transaction's price should be higher than the average price from min to the last element in the account list.
+		for _, dropTx := range drop {
+			dropSender, _ := types.Sender(pool.signer, dropTx)
+			if list_dropsender := pool.pending[dropSender]; list_dropsender != nil && list_dropsender.Overlaps(dropTx) {
+				if tx.GasPrice().Cmp(list_dropsender.totaluntilmincost()) < 0 {
+					return false, ErrUnderpriced
+				}
+			}
+		}
+		
 		// Special case, we still can't make the room for the new remote one.
 		if !isLocal && !success {
 			log.Trace("Discarding overflown transaction", "hash", hash)
@@ -686,7 +696,7 @@ func (pool *LegacyPool) add(tx *types.Transaction, local bool) (replaced bool, e
 			}
 		}
 		
-		//drop the last element in the same account of drop old tx list
+		//drop the last element in account list of same sender of old dropTx.
 		drop_new := make(types.Transactions, 0, pool.all.Slots()-int(pool.config.GlobalSlots+pool.config.GlobalQueue)+numSlots(tx))
 		for _, dropTx := range drop {
 			dropSender, _ := types.Sender(pool.signer, dropTx)
