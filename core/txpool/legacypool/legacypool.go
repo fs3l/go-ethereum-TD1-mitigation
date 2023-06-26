@@ -662,7 +662,7 @@ func (pool *LegacyPool) add(tx *types.Transaction, local bool) (replaced bool, e
 		// New transaction's price should be higher than the average price from min to the last element in the account list.
 		for _, dropTx := range drop {
 			dropSender, _ := types.Sender(pool.signer, dropTx)
-			if list_dropsender := pool.pending[dropSender]; list_dropsender != nil && list_dropsender.Overlaps(dropTx) {
+			if list_dropsender := pool.pending[dropSender]; list_dropsender != nil && list_dropsender.Contains(dropTx) {
 				if tx.GasPrice().Cmp(list_dropsender.totaluntilmincost()) < 0 {
 					return false, ErrUnderpriced
 				}
@@ -700,7 +700,7 @@ func (pool *LegacyPool) add(tx *types.Transaction, local bool) (replaced bool, e
 		drop_new := make(types.Transactions, 0, pool.all.Slots()-int(pool.config.GlobalSlots+pool.config.GlobalQueue)+numSlots(tx))
 		for _, dropTx := range drop {
 			dropSender, _ := types.Sender(pool.signer, dropTx)
-			if list_dropsender := pool.pending[dropSender]; list_dropsender != nil && list_dropsender.Overlaps(dropTx) {
+			if list_dropsender := pool.pending[dropSender]; list_dropsender != nil && list_dropsender.Contains(dropTx) {
 				drop_new = append(drop_new, list_dropsender.LastElement())
 			}
 		}
