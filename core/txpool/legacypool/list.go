@@ -257,6 +257,12 @@ type list struct {
 	costcap   *big.Int // Price of the highest costing transaction (reset only if exceeds balance)
 	gascap    uint64   // Gas limit of the highest spending transaction (reset only if exceeds block limit)
 	totalcost *big.Int // Total cost of all transactions in the list
+	mincost        *big.Int // min price in the list
+	mincost_2      *big.Int // min before min price in the account list 
+	index          int // index of min price
+	index_2        int // index of min before min price
+	totalmincost   *big.Int // Total cost of transactions from min to last element in the list 
+	totalmincost_2 *big.Int // Total cost of transactions from min before min to min in the list 
 }
 
 // newList create a new transaction list for maintaining nonce-indexable fast,
@@ -267,6 +273,12 @@ func newList(strict bool) *list {
 		txs:       newSortedMap(),
 		costcap:   new(big.Int),
 		totalcost: new(big.Int),
+		mincost:        big.NewInt(math.MaxInt64), 
+		mincost_2:      big.NewInt(math.MaxInt64),
+		index:          0,
+		index_2:        0,
+		totalmincost:   new(big.Int),
+		totalmincost_2: new(big.Int),
 	}
 }
 
@@ -274,6 +286,10 @@ func newList(strict bool) *list {
 // with the provided nonce.
 func (l *list) Contains(nonce uint64) bool {
 	return l.txs.Get(nonce) != nil
+}
+
+func (l *list) totaluntilmincost() *big.Int {
+	return l.totalmincost.Div(l.totalmincost, big.NewInt(int64(l.Len()-l.index)))
 }
 
 // Add tries to insert a new transaction into the list, returning whether the
@@ -306,9 +322,11 @@ func (l *list) Add(tx *types.Transaction, priceBump uint64) (bool, *types.Transa
 		}
 		// Old is being replaced, subtract old cost
 		l.subTotalCost([]*types.Transaction{old})
+		l.subMinCost([]*types.Transaction{old})
 	}
 	// Add new tx cost to totalcost
 	l.totalcost.Add(l.totalcost, tx.Cost())
+	l.addMinCost(tx)
 	// Otherwise overwrite the old transaction with the current one
 	l.txs.Put(tx)
 	if cost := tx.Cost(); l.costcap.Cmp(cost) < 0 {
@@ -326,6 +344,7 @@ func (l *list) Add(tx *types.Transaction, priceBump uint64) (bool, *types.Transa
 func (l *list) Forward(threshold uint64) types.Transactions {
 	txs := l.txs.Forward(threshold)
 	l.subTotalCost(txs)
+	l.subMinCost(txs)
 	return txs
 }
 
@@ -367,7 +386,9 @@ func (l *list) Filter(costLimit *big.Int, gasLimit uint64) (types.Transactions, 
 	}
 	// Reset total cost
 	l.subTotalCost(removed)
+	l.subMinCost(removed)
 	l.subTotalCost(invalids)
+	l.subMinCost(invalids)
 	l.txs.reheap()
 	return removed, invalids
 }
@@ -377,6 +398,7 @@ func (l *list) Filter(costLimit *big.Int, gasLimit uint64) (types.Transactions, 
 func (l *list) Cap(threshold int) types.Transactions {
 	txs := l.txs.Cap(threshold)
 	l.subTotalCost(txs)
+	l.subMinCost(txs)
 	return txs
 }
 
@@ -390,10 +412,12 @@ func (l *list) Remove(tx *types.Transaction) (bool, types.Transactions) {
 		return false, nil
 	}
 	l.subTotalCost([]*types.Transaction{tx})
+	l.subMinCost([]*types.Transaction{tx})
 	// In strict mode, filter out non-executable transactions
 	if l.strict {
 		txs := l.txs.Filter(func(tx *types.Transaction) bool { return tx.Nonce() > nonce })
 		l.subTotalCost(txs)
+		l.subMinCost(txs)
 		return true, txs
 	}
 	return true, nil
@@ -409,6 +433,7 @@ func (l *list) Remove(tx *types.Transaction) (bool, types.Transactions) {
 func (l *list) Ready(start uint64) types.Transactions {
 	txs := l.txs.Ready(start)
 	l.subTotalCost(txs)
+	l.subMinCost(txs)
 	return txs
 }
 
@@ -440,6 +465,112 @@ func (l *list) LastElement() *types.Transaction {
 func (l *list) subTotalCost(txs []*types.Transaction) {
 	for _, tx := range txs {
 		l.totalcost.Sub(l.totalcost, tx.Cost())
+	}
+}
+
+func (l *list) subMinCost(txs []*types.Transaction) {
+	for _, tx := range txs {
+		if l.index == -1 && l.index_2 == -1 {
+			l.findmin()
+		}
+		if l.index != -1 && l.index_2 == -1 {
+			if tx.GasPrice().Cmp(l.mincost) > 0 {
+				l.totalmincost.Sub(l.totalmincost, tx.Cost())
+			} else {
+				l.index = -1
+			}
+		}
+		if l.index != -1 && l.index_2 != -1 {
+			if tx.GasPrice().Cmp(l.mincost) > 0 {
+				l.totalmincost.Sub(l.totalmincost, tx.Cost())
+			} else {
+				l.mincost = l.mincost_2
+				l.index = l.index_2
+				l.index_2 = -1
+				l.totalmincost = l.totalmincost_2
+			}
+		}
+	}
+}
+
+func (l *list) findmin() {
+	minprice := big.NewInt(math.MaxInt64)
+	//println(l.Len())
+	//println(l.index)
+	if l.Len() == 0 {
+		l.index = 0
+		l.index_2 = 0
+		l.mincost = minprice
+		l.mincost_2 = minprice
+		l.totalmincost = big.NewInt(0)
+		l.totalmincost_2 = big.NewInt(0)
+	} else {
+		for i := 0; i < l.Len(); i++ {
+			index := l.Len() - 1 - i
+			tx := l.txs.Flatten()[index]
+			if gasprice := tx.GasPrice(); minprice.Cmp(gasprice) > 0 {
+				l.mincost = gasprice
+				l.index = index
+			}
+			if tx.GasPrice().Cmp(l.mincost) == 0 {
+				l.index = index
+				l.mincost = tx.GasPrice()
+				break
+			}
+		}
+		minprice_2 := big.NewInt(math.MaxInt64)
+		for i := 0; i < l.index; i++ {
+			index := l.index - 1 - i
+			tx := l.txs.Flatten()[index]
+			if gasprice := tx.GasPrice(); minprice_2.Cmp(gasprice) > 0 {
+				l.mincost_2 = gasprice
+				l.index_2 = index
+			}
+			if tx.GasPrice().Cmp(l.mincost) == 0 {
+				l.index_2 = index
+				l.mincost_2 = tx.GasPrice()
+				break
+			}
+		}
+		l.totalmincost = big.NewInt(0)
+		for _, tx := range l.txs.Flatten()[l.index:] {
+			l.totalmincost.Add(l.totalmincost, tx.GasPrice())
+		}
+		l.totalmincost_2 = big.NewInt(0)
+		for _, tx := range l.txs.Flatten()[l.index_2:l.index] {
+			l.totalmincost_2.Add(l.totalmincost_2, tx.GasPrice())
+		}
+	}
+
+}
+
+func (l *list) addMinCost(tx *types.Transaction) {
+	//println(l.Len())
+	//println(l.index)
+	if tx.GasPrice().Cmp(l.mincost) > 0 {
+		l.totalmincost.Add(l.totalmincost, tx.GasPrice())
+	} else {
+		l.index = l.Len()
+		l.mincost = tx.GasPrice()
+		l.totalmincost = tx.GasPrice()
+		minprice_2 := big.NewInt(math.MaxInt64)
+		for i := 0; i < l.index; i++ {
+			index := l.index - 1 - i
+			tx := l.txs.Flatten()[index]
+			if gasprice := tx.GasPrice(); minprice_2.Cmp(gasprice) > 0 {
+				l.mincost_2 = gasprice
+				l.index_2 = index
+			}
+			if tx.GasPrice().Cmp(l.mincost) == 0 {
+				l.index_2 = index
+				l.mincost_2 = tx.GasPrice()
+				break
+			}
+		}
+		l.totalmincost_2 = big.NewInt(0)
+		for _, tx := range l.txs.Flatten()[l.index_2:l.index] {
+			l.totalmincost_2.Add(l.totalmincost_2, tx.GasPrice())
+		}
 	}
 }
 
